@@ -1,4 +1,4 @@
-# Complaint Copilot 🔍
+# Complaint Intelligence 🔍
 
 AI-powered intelligence over the [CFPB Consumer Complaint Database](https://www.consumerfinance.gov/data-research/consumer-complaints/).
 
