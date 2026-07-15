@@ -36,8 +36,8 @@ Streamlit dashboard
 ## Run locally
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/complaint-copilot
-cd complaint-copilot
+git clone https://github.com/mvillanueva00/ADS-599-Capstone-Project
+cd ADS-599-Capstone-Project
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
