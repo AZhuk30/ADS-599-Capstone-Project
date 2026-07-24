@@ -14,7 +14,6 @@ presented next to real citations would be misleading.
 """
 
 import os
-import re
 
 import pandas as pd
 import streamlit as st
@@ -68,7 +67,26 @@ if not retrieval.EMB_PATH.exists():
             "minutes and only happens once.")
 embeddings = get_embeddings(len(df))
 
-HAS_KEY = bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
+def _load_api_key() -> bool:
+    """Find the key in Streamlit secrets (Cloud) or the environment (local).
+
+    Streamlit Cloud has no shell, so the key is set under Settings -> Secrets.
+    Copying it into the environment lets gemini_client stay unaware of which
+    it came from.
+    """
+    if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
+        return True
+    try:
+        key = st.secrets.get("GEMINI_API_KEY")
+    except Exception:
+        key = None
+    if key:
+        os.environ["GEMINI_API_KEY"] = key
+        return True
+    return False
+
+
+HAS_KEY = _load_api_key()
 
 
 # ── Answer generation ────────────────────────────────────────────────────────
@@ -99,11 +117,17 @@ with st.sidebar:
         ["All"] + sorted(df["product"].dropna().unique().tolist()))
     top_k = st.slider("Complaints to retrieve", 3, 10, 5)
     st.divider()
+    if retrieval.IS_DEMO:
+        st.caption("Demo corpus \u2014 a stratified sample of the full "
+                   "44,234-complaint dataset. Reported evaluation results use "
+                   "the complete corpus.")
     st.caption(f"Embeddings: `{retrieval.EMBED_MODEL}`")
     if HAS_KEY:
         st.caption(f"Answers: `{GEMINI_MODEL}`")
     else:
-        st.warning("GEMINI_API_KEY not set — search only, no written answers.")
+        st.warning("No API key found — search works, but no written answers. "
+                   "Set GEMINI_API_KEY locally, or add it under Settings → "
+                   "Secrets on Streamlit Cloud.")
 
 # ── Header ───────────────────────────────────────────────────────────────────
 st.title("🔍 Complaint Intelligence")

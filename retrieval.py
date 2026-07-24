@@ -28,8 +28,34 @@ from pathlib import Path
 from sentence_transformers import SentenceTransformer
 
 DATA_DIR = Path("data")
-CORPUS_PATH = DATA_DIR / "complaints_model_ready.parquet"
-EMB_PATH = DATA_DIR / "embeddings_bge_docs.npy"
+
+# Full corpus, used locally and for every reported evaluation number.
+FULL_CORPUS_PATH = DATA_DIR / "complaints_model_ready.parquet"
+FULL_EMB_PATH = DATA_DIR / "embeddings_bge_docs.npy"
+
+# Small committed subset, used only where the full embedding cache is absent —
+# in practice, Streamlit Cloud, where encoding 44k narratives on boot would
+# exceed the timeout and the memory limit. Built by make_demo_subset.py.
+DEMO_CORPUS_PATH = DATA_DIR / "complaints_demo.parquet"
+DEMO_EMB_PATH = DATA_DIR / "embeddings_demo.npy"
+
+
+def resolve_dataset() -> tuple[Path, Path, bool]:
+    """Return (corpus_path, embedding_path, is_demo).
+
+    Prefers the full corpus whenever its embedding cache exists, so local runs
+    and all evaluation use the complete data. Falls back to the demo subset
+    only when the full cache is missing but the demo files are present.
+    """
+    if FULL_CORPUS_PATH.exists() and FULL_EMB_PATH.exists():
+        return FULL_CORPUS_PATH, FULL_EMB_PATH, False
+    if DEMO_CORPUS_PATH.exists() and DEMO_EMB_PATH.exists():
+        return DEMO_CORPUS_PATH, DEMO_EMB_PATH, True
+    # Nothing cached: fall back to the full corpus and encode it.
+    return FULL_CORPUS_PATH, FULL_EMB_PATH, False
+
+
+CORPUS_PATH, EMB_PATH, IS_DEMO = resolve_dataset()
 
 TEXT_COL = "narrative_clean"
 EMBED_MODEL = "BAAI/bge-small-en-v1.5"
@@ -43,10 +69,12 @@ DISPLAY_COLS = ["complaint_id", "date_received", "product", "sub_product",
 
 def load_corpus() -> pd.DataFrame:
     """Load the cleaned, deduplicated corpus used for all evaluation."""
-    if not CORPUS_PATH.exists():
+    corpus_path, _, _ = resolve_dataset()
+    if not corpus_path.exists():
         raise FileNotFoundError(
-            f"{CORPUS_PATH} not found. Run 02_copilot_data_prep.ipynb first.")
-    df = pd.read_parquet(CORPUS_PATH)
+            f"{corpus_path} not found. Run 02_copilot_data_prep.ipynb first, "
+            f"or make_demo_subset.py to build the smaller demo corpus.")
+    df = pd.read_parquet(corpus_path)
     df = df.dropna(subset=[TEXT_COL]).reset_index(drop=True)
     if "date_received" in df.columns:
         df["date_received"] = pd.to_datetime(df["date_received"],
@@ -61,16 +89,17 @@ def load_model() -> SentenceTransformer:
 def build_or_load_embeddings(df: pd.DataFrame, model: SentenceTransformer,
                              progress: bool = True) -> np.ndarray:
     """Return unit-normalised document vectors, encoding once and caching."""
-    if EMB_PATH.exists():
-        emb = np.load(EMB_PATH)
+    _, emb_path, _ = resolve_dataset()
+    if emb_path.exists():
+        emb = np.load(emb_path)
         if len(emb) == len(df):
             return emb
         print("  Embedding cache size mismatch — re-encoding.")
     texts = df[TEXT_COL].astype(str).tolist()
     emb = model.encode(texts, batch_size=128, show_progress_bar=progress,
                        convert_to_numpy=True, normalize_embeddings=True)
-    EMB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    np.save(EMB_PATH, emb)
+    emb_path.parent.mkdir(parents=True, exist_ok=True)
+    np.save(emb_path, emb)
     return emb
 
 
