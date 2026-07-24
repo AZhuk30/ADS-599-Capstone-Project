@@ -1,159 +1,207 @@
 """
-app.py — Streamlit dashboard for Complaint Copilot.
+app.py — Complaint Intelligence dashboard.
+
 Run: streamlit run app.py
-Requires: data/complaints.parquet (from ingest.py)
-          data/embeddings.npy     (from 02_copilot_rag.py, or generated on first load)
+
+Shares its retrieval layer with 03_copilot_rag.py via retrieval.py, so the
+deployed tool runs the configuration evaluated in 04_copilot_modeling.py:
+BGE-small embeddings over the cleaned, deduplicated corpus.
+
+Answer generation uses Google Gemini and requires GEMINI_API_KEY. Without it the
+app still performs semantic search and shows source complaints, but produces no
+written answer — it does not fabricate a summary, because an ungrounded summary
+presented next to real citations would be misleading.
 """
 
 import os
-import streamlit as st
-import pandas as pd
-import numpy as np
-from pathlib import Path
-from sentence_transformers import SentenceTransformer
+import re
 
-# ── Page config ───────────────────────────────────────────────────────────────
-st.set_page_config(
-    page_title="Complaint Copilot",
-    page_icon="🔍",
-    layout="wide"
+import pandas as pd
+import streamlit as st
+
+import retrieval
+import gemini_client
+
+GEMINI_MODEL = gemini_client.MODEL
+
+# On Gemini 3 models this budget covers internal reasoning tokens as well as the
+# visible answer, so keep it generous or responses come back empty.
+MAX_OUTPUT_TOKENS = 2048
+
+SYSTEM_PROMPT = (
+    "You are a consumer-complaint analyst supporting compliance and regulatory "
+    "review. Answer using ONLY the numbered complaints provided. Support every "
+    "factual claim with a bracketed citation such as [2], naming the SPECIFIC "
+    "complaint that claim rests on — do not list every complaint after every "
+    "sentence. Never use outside knowledge. If the complaints do not answer "
+    "the question, say so plainly. Be concise: one short paragraph, then up "
+    "to four bullet points."
 )
 
-DATA_DIR = Path("data")
-NARRATIVE_COL = "consumer_complaint_narrative"
+st.set_page_config(page_title="Complaint Intelligence", page_icon="🔍",
+                   layout="wide")
 
-# ── Load data & embeddings ────────────────────────────────────────────────────
+
+# ── Cached resources ─────────────────────────────────────────────────────────
 @st.cache_resource
-def load_model():
-    return SentenceTransformer("all-MiniLM-L6-v2")
+def get_model():
+    return retrieval.load_model()
+
 
 @st.cache_data
-def load_data():
-    df = pd.read_parquet(DATA_DIR / "complaints.parquet")
-    df["date_received"] = pd.to_datetime(df["date_received"], errors="coerce", utc=True)
-    return df
+def get_corpus():
+    return retrieval.load_corpus()
+
 
 @st.cache_data
-def load_embeddings(_df):
-    emb_path = DATA_DIR / "embeddings.npy"
-    if emb_path.exists():
-        return np.load(emb_path)
-    st.info("Generating embeddings on first load (~1 min)...")
-    model = load_model()
-    texts = _df[NARRATIVE_COL].fillna("").tolist()
-    embs = model.encode(texts, batch_size=128, show_progress_bar=False,
-                        convert_to_numpy=True)
-    np.save(emb_path, embs)
-    return embs
+def get_embeddings(n_rows: int):
+    """n_rows busts the cache if the corpus changes."""
+    return retrieval.build_or_load_embeddings(get_corpus(), get_model(),
+                                              progress=False)
 
-model      = load_model()
-df         = load_data()
-embeddings = load_embeddings(df)
 
-# ── Retrieval ─────────────────────────────────────────────────────────────────
-def retrieve(query: str, top_k: int = 5, product_filter=None) -> pd.DataFrame:
-    q_emb = model.encode([query], convert_to_numpy=True)
-    scores = embeddings @ q_emb.T / (
-        np.linalg.norm(embeddings, axis=1, keepdims=True) *
-        np.linalg.norm(q_emb) + 1e-9
+df = get_corpus()
+model = get_model()
+
+if not retrieval.EMB_PATH.exists():
+    st.info("Building the semantic index on first load. This takes a few "
+            "minutes and only happens once.")
+embeddings = get_embeddings(len(df))
+
+HAS_KEY = bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
+
+
+# ── Answer generation ────────────────────────────────────────────────────────
+def generate_answer(question: str, retrieved: pd.DataFrame) -> dict:
+    """Delegates to gemini_client, which retries transient 503/429 failures."""
+    text = gemini_client.generate(
+        prompt=f"Complaints:\n{retrieval.build_context(retrieved)}"
+               f"\n\nQuestion: {question}",
+        system_instruction=SYSTEM_PROMPT,
+        temperature=0.2,
+        verbose=False,             # retries would otherwise print to the console
     )
-    scores = scores.flatten()
-    if product_filter and product_filter != "All":
-        mask = (df["product"] == product_filter).values
-        scores = np.where(mask, scores, -1)
-    top_idx = np.argsort(scores)[::-1][:top_k]
-    results = df.iloc[top_idx].copy()
-    results["similarity"] = scores[top_idx]
-    return results[results["similarity"] > 0]
+
+    cited = gemini_client.extract_citations(text)
+    valid = set(range(1, len(retrieved) + 1))
+    return {"text": text,
+            "cited": [c for c in cited if c in valid],
+            "invalid": [c for c in cited if c not in valid]}
 
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
+# ── Sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.title("🔍 Complaint Copilot")
-    st.caption(f"**{len(df):,}** complaints loaded")
+    st.title("🔍 Complaint Intelligence")
+    st.caption(f"**{len(df):,}** complaints indexed")
     st.divider()
     product_filter = st.selectbox(
         "Filter by product",
-        ["All"] + sorted(df["product"].dropna().unique().tolist())
-    )
-    top_k = st.slider("Results to retrieve", 3, 10, 5)
+        ["All"] + sorted(df["product"].dropna().unique().tolist()))
+    top_k = st.slider("Complaints to retrieve", 3, 10, 5)
+    st.divider()
+    st.caption(f"Embeddings: `{retrieval.EMBED_MODEL}`")
+    if HAS_KEY:
+        st.caption(f"Answers: `{GEMINI_MODEL}`")
+    else:
+        st.warning("GEMINI_API_KEY not set — search only, no written answers.")
 
-# ── Main ──────────────────────────────────────────────────────────────────────
-st.title("🔍 Complaint Copilot")
-st.caption("Semantic search over the CFPB Consumer Complaint Database")
+# ── Header ───────────────────────────────────────────────────────────────────
+st.title("🔍 Complaint Intelligence")
+st.caption("Ask a question about consumer complaints and get an answer grounded "
+           "in specific, traceable complaint narratives.")
 
-# Metrics row
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Total Complaints", f"{len(df):,}")
-col2.metric("Products", df["product"].nunique())
-col3.metric("Companies", df["company"].nunique())
-col4.metric("States", df["state"].nunique())
-
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Complaints", f"{len(df):,}")
+c2.metric("Products", df["product"].nunique())
+c3.metric("Companies", df["company"].nunique())
+c4.metric("States", df["state"].nunique() if "state" in df.columns else "—")
 st.divider()
 
-# ── Query box ─────────────────────────────────────────────────────────────────
-st.subheader("Ask anything about the complaints")
-
-examples = [
-    "What are the most common issues with student loans?",
-    "Problems with debt collectors harassing consumers",
-    "Credit card billing disputes and unauthorized charges",
-    "Mortgage companies failing to process payments correctly",
-    "What companies have the most complaints about fees?",
+# ── Query ────────────────────────────────────────────────────────────────────
+EXAMPLES = [
+    "What problems are consumers reporting with debt collectors?",
+    "Why are consumers disputing credit card charges?",
+    "What goes wrong during the mortgage payment process?",
+    "What issues do consumers face with money transfer apps?",
 ]
 
-cols = st.columns(len(examples))
-query = ""
-for i, (col, ex) in enumerate(zip(cols, examples)):
-    if col.button(ex[:35] + "…", key=f"ex_{i}"):
-        query = ex
+if "query" not in st.session_state:
+    st.session_state.query = ""
 
-query = st.text_input("Or type your own question:", value=query, placeholder="e.g. What are the biggest issues with credit reporting?")
+st.subheader("Ask a question")
+cols = st.columns(len(EXAMPLES))
+for i, (col, ex) in enumerate(zip(cols, EXAMPLES)):
+    if col.button(ex[:32] + "…", key=f"ex_{i}", use_container_width=True):
+        st.session_state.query = ex
+
+query = st.text_input("Your question:", value=st.session_state.query,
+                      placeholder="e.g. What are consumers saying about "
+                                  "credit reporting errors?")
 
 if query:
     with st.spinner("Searching complaints..."):
-        retrieved = retrieve(query, top_k=top_k, product_filter=product_filter)
+        retrieved = retrieval.retrieve(query, df, embeddings, model,
+                                       top_k=top_k,
+                                       product_filter=product_filter)
 
-    if len(retrieved) == 0:
-        st.warning("No matching complaints found. Try rephrasing your question.")
+    if retrieved.empty:
+        st.warning("No matching complaints found. Try rephrasing, or widen the "
+                   "product filter.")
     else:
-        top_products = ", ".join(retrieved["product"].value_counts().head(3).index.tolist())
-        st.markdown("### 💡 Summary")
-        st.info(f"Found {len(retrieved)} complaints most similar to your question. "
-                f"They mostly involve: {top_products}. See the matching complaints below.")
+        if HAS_KEY:
+            with st.spinner("Reading the complaints and writing an answer..."):
+                try:
+                    result = generate_answer(query, retrieved)
+                    st.markdown("### Answer")
+                    st.markdown(result["text"])
+                    if result["cited"]:
+                        st.caption("Cited complaints: " +
+                                   ", ".join(f"[{c}]" for c in result["cited"]))
+                    if result["invalid"]:
+                        st.warning(
+                            f"The answer cited {result['invalid']}, which is "
+                            f"outside the retrieved set. Treat those claims as "
+                            f"unverified.")
+                except Exception as e:
+                    st.error(f"Answer generation failed: {e}")
+                    st.caption("Source complaints are still shown below.")
+        else:
+            st.info("Set GEMINI_API_KEY to generate a written answer. The "
+                    "retrieved source complaints are shown below.")
 
-        st.markdown(f"### 📄 Source Complaints ({len(retrieved)} retrieved)")
-        for i, (_, row) in enumerate(retrieved.iterrows()):
-            with st.expander(f"[{i+1}] {row['company']} — {row['product']} — {row['issue']} (similarity: {row['similarity']:.2f})"):
-                col1, col2, col3 = st.columns(3)
-                col1.markdown(f"**State:** {row.get('state','N/A')}")
-                col2.markdown(f"**Response:** {row.get('company_response','N/A')}")
-                col3.markdown(f"**Timely:** {row.get('timely','N/A')}")
+        st.markdown(f"### Source complaints ({len(retrieved)})")
+        st.caption("Numbered to match the citations above.")
+        for i, (_, row) in enumerate(retrieved.iterrows(), 1):
+            with st.expander(
+                f"[{i}] {row.get('company', 'Unknown')} — "
+                f"{row.get('product', 'Unknown')} — {row.get('issue', 'Unknown')} "
+                f"(similarity {row['similarity']:.2f})"
+            ):
+                m1, m2, m3 = st.columns(3)
+                m1.markdown(f"**State:** {row.get('state', 'N/A')}")
+                m2.markdown(f"**Company response:** "
+                            f"{row.get('company_response', 'N/A')}")
+                m3.markdown(f"**Timely:** {row.get('timely', 'N/A')}")
+                if pd.notna(row.get("date_received", None)):
+                    st.caption(f"Received {row['date_received']:%B %d, %Y}")
                 st.markdown("**Narrative:**")
-                st.write(str(row[NARRATIVE_COL])[:1000])
+                st.write(str(row[retrieval.TEXT_COL]))
 
 st.divider()
 
-# ── Trends ────────────────────────────────────────────────────────────────────
-st.subheader("📊 Complaint Trends")
+# ── Trends ───────────────────────────────────────────────────────────────────
+st.subheader("📊 Complaint trends")
+t1, t2 = st.columns(2)
+with t1:
+    st.markdown("**Top products**")
+    st.bar_chart(df["product"].value_counts().head(8))
+with t2:
+    st.markdown("**Top issues**")
+    st.bar_chart(df["issue"].value_counts().head(8))
 
-tcol1, tcol2 = st.columns(2)
+st.markdown("**Top companies by complaint volume**")
+st.bar_chart(df["company"].value_counts().head(10))
 
-with tcol1:
-    st.markdown("**Top Products**")
-    top_products = df["product"].value_counts().head(8)
-    st.bar_chart(top_products)
-
-with tcol2:
-    st.markdown("**Top Issues**")
-    top_issues = df["issue"].value_counts().head(8)
-    st.bar_chart(top_issues)
-
-st.markdown("**Top Companies by Complaint Volume**")
-top_companies = df["company"].value_counts().head(10)
-st.bar_chart(top_companies)
-
-if "date_received" in df.columns:
-    st.markdown("**Complaints Over Time**")
-    timeline = df.set_index("date_received").resample("W").size()
-    st.line_chart(timeline)
+if "date_received" in df.columns and df["date_received"].notna().any():
+    st.markdown("**Complaints over time**")
+    st.line_chart(df.set_index("date_received").resample("W").size())

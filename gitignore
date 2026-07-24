@@ -1,0 +1,24 @@
+# Embedding caches — too large for GitHub (100 MB limit) and regenerable
+data/*.npy
+
+# Model outputs and logs
+data/modeling_*.csv
+data/complaints.csv
+*.log
+
+# Keep: data/complaints_model_ready.parquet and data/complaints.parquet
+# (committed so teammates can run 04 without re-running ingest + prep)
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# Environment and secrets
+.env
+.streamlit/secrets.toml
+
+# macOS
+.DS_Store
