@@ -46,17 +46,23 @@ Evaluated on 26 analyst-style queries, relevance proxied by CFPB issue label.
 
 | Retrieval system | P@5 | P@10 | MRR |
 |---|---|---|---|
-| BM25 (lexical baseline) | 0.431 | 0.435 | 0.613 |
-| TF-IDF cosine | 0.315 | 0.312 | 0.457 |
-| Dense — MiniLM-L6 | 0.531 | 0.542 | 0.711 |
-| **Dense — BGE-small** | **0.592** | 0.550 | 0.715 |
-| Hybrid RRF (BM25 + BGE) | 0.554 | **0.558** | **0.741** |
+| BM25 (lexical baseline) | 0.485 | 0.481 | 0.683 |
+| TF-IDF cosine | 0.369 | 0.362 | 0.498 |
+| Dense — MiniLM-L6 | 0.585 | 0.588 | 0.765 |
+| **Dense — BGE-small** | **0.646** | 0.596 | **0.785** |
+| Hybrid RRF (BM25 + BGE) | 0.600 | **0.600** | 0.775 |
 
 Semantic retrieval significantly outperforms the lexical baseline on precision
 (P@5 +0.162, p = 0.010; P@10 +0.115, p = 0.001; paired bootstrap over 26
 queries). The two do not differ significantly on MRR, and hybrid fusion shows no
 significant gain over dense retrieval alone — so the simpler dense-only
 architecture is what ships.
+
+> **Note:** these figures use relevance labels corrected by a pooled audit
+> across all three retrievers (see `audit_labels.py`). The correction raised
+> every system by ~0.054 and left the paired-test conclusions unchanged. Full
+> numbers are in `data/modeling_retrieval.csv`.
+
 
 On a secondary classification diagnostic the ordering reverses: sparse TF-IDF
 features beat dense embeddings (macro-F1 0.754 vs 0.642), a gap that persisted
@@ -72,7 +78,7 @@ git clone https://github.com/mvillanueva00/ADS-599-Capstone-Project
 cd ADS-599-Capstone-Project
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt   # full toolkit: modeling, notebooks, app
 ```
 
 `data/complaints_model_ready.parquet` is committed, so you can skip ingest and
@@ -97,6 +103,8 @@ python ingest.py --rows 10000
 jupyter notebook 01_copilot_eda.ipynb
 jupyter notebook 02_copilot_data_prep.ipynb
 ```
+
+**Two requirements files.** `requirements.txt` is the minimal app runtime (what Streamlit Cloud installs). `requirements-dev.txt` installs everything — modeling, evaluation, and the notebooks — and is what you want for reproducing results locally.
 
 **Note on embeddings.** Cached vectors (`data/*.npy`) are gitignored — they
 exceed GitHub's 100 MB file limit. The first run of any script regenerates and

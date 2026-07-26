@@ -1,0 +1,16 @@
+n_errors,pct_of_true_class,true_product,predicted_product
+178,0.10253456221198157,Checking or savings account,"Money transfer, virtual currency, or money service"
+172,0.23337856173677068,"Money transfer, virtual currency, or money service",Checking or savings account
+96,0.057971014492753624,Credit card,Checking or savings account
+94,0.05414746543778802,Checking or savings account,Credit card
+79,0.04770531400966183,Credit card,Debt collection
+71,0.02762645914396887,Debt collection,Credit reporting or other personal consumer reports
+49,0.01906614785992218,Debt collection,"Payday loan, title loan, personal loan, or advance loan"
+45,0.017509727626459144,Debt collection,Credit card
+35,0.013618677042801557,Debt collection,Vehicle loan or lease
+33,0.12992125984251968,Credit reporting or other personal consumer reports,Debt collection
+33,0.019927536231884056,Credit card,"Payday loan, title loan, personal loan, or advance loan"
+30,0.09615384615384616,"Payday loan, title loan, personal loan, or advance loan",Debt collection
+29,0.017512077294685992,Credit card,"Money transfer, virtual currency, or money service"
+26,0.32098765432098764,Debt or credit management,Debt collection
+25,0.052521008403361345,Vehicle loan or lease,Debt collection
