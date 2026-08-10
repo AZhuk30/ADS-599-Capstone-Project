@@ -23,7 +23,10 @@ Usage:
 
 import os
 import re
+import sys
 import argparse
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
 import retrieval
 import gemini_client
