@@ -25,22 +25,22 @@ Ask a plain-English question about consumer complaints and get an answer grounde
 CFPB API (official v1 endpoint)
 ↓ ingest.py
 data/complaints.parquet
-↓ 01_copilot_eda.ipynb
+↓ notebooks/01_copilot_eda.ipynb
 EDA findings (data quality, category mix, length distribution)
-↓ 02_copilot_data_prep.ipynb
+↓ notebooks/02_copilot_data_prep.ipynb
 data/complaints_model_ready.parquet (cleaned, deduplicated)
 ↓ 04_copilot_modeling.py
 Retrieval + classification evaluation → data/modeling_*.csv
-↓ retrieval.py (shared retrieval layer)
+↓ src/retrieval.py (shared retrieval layer)
 ↓
 03_copilot_rag.py (CLI) · app.py (Streamlit artifact)
 ```
 
-`retrieval.py` is the single source of truth for how complaints are embedded and
-searched. Both the CLI and the app import it, so the deployed tool always runs
-the configuration that was evaluated.
+`src/retrieval.py` is the single source of truth for how complaints are embedded
+and searched. Both the CLI and the app import it, so the deployed tool always
+runs the configuration that was evaluated.
 
-Answer generation runs through `gemini_client.py`, a shared layer used by
+Answer generation runs through `src/gemini_client.py`, a shared layer used by
 `03_copilot_rag.py`, `app.py`, and `test_pipeline.py` alike — so the model name,
 retry policy, and citation-parsing logic can't drift between the CLI, the
 deployed app, and the tests.
@@ -99,7 +99,7 @@ above reflect the corrected, label-free run.
   it after the fact — is the top item in future work.
 - **Six-month analytical window (Jan–Jun 2026).** Scoped deliberately after
   EDA revealed a structural break in complaint volume and composition tied to
-  a documented CFPB policy change (see `01_copilot_eda.ipynb`). Blending
+  a documented CFPB policy change (see `notebooks/01_copilot_eda.ipynb`). Blending
   pre/post-policy data would conflate a regulatory artifact with a genuine
   behavioral trend.
 - **Off-the-shelf embeddings, no domain adaptation.** Both embedding models
@@ -147,8 +147,8 @@ To rebuild the corpus from scratch:
 python ingest.py --rows 10000   # small sample for a quick local test run;
                                  # results reported above used the full
                                  # Jan-Jun 2026 extract, ~48,700 rows pre-cleaning
-jupyter notebook 01_copilot_eda.ipynb
-jupyter notebook 02_copilot_data_prep.ipynb
+jupyter notebook notebooks/01_copilot_eda.ipynb
+jupyter notebook notebooks/02_copilot_data_prep.ipynb
 ```
 
 **Two requirements files.** `requirements.txt` is the minimal app runtime (what
@@ -165,10 +165,11 @@ semantic search and displays source complaints but produces no written answer.
 It deliberately does not fabricate a summary, since an ungrounded summary shown
 beside real citations would be misleading.
 
-**Notebooks vs. scripts.** `03_copilot_rag.ipynb` and `04_copilot_modeling.ipynb`
-mirror `03_copilot_rag.py` and `04_copilot_modeling.py` respectively — same
-logic, notebook form for interactive/exploratory use. The `.py` scripts are
-what the app and test suite actually import and run.
+**Notebooks vs. scripts.** `notebooks/03_copilot_rag.ipynb` and
+`notebooks/04_copilot_modeling.ipynb` mirror `03_copilot_rag.py` and
+`04_copilot_modeling.py` respectively — same logic, notebook form for
+interactive/exploratory use. The `.py` scripts (at the repo root) are what the
+app and test suite actually import and run.
 
 ---
 
@@ -225,22 +226,47 @@ Updated daily. No API key required.
 | Language | Python 3.10+ |
 
 ---
+## Repository structure
+
+```
+ADS-599-Capstone-Project/
+├── app.py                          # Streamlit dashboard (entry point)
+├── ingest.py                       # CFPB API ingestion
+├── 03_copilot_rag.py               # Citation-backed Q&A, CLI
+├── 04_copilot_modeling.py          # Retrieval + classification evaluation
+├── audit_labels.py                 # Relevance-label audit tool
+├── diagnose_query.py               # Zero-score query diagnostic tool
+├── test_pipeline.py                # Automated test suite
+├── requirements.txt                # Minimal app runtime
+├── requirements-dev.txt            # Full toolkit (modeling, notebooks, app)
+├── src/
+│   ├── retrieval.py                # Shared retrieval layer
+│   └── gemini_client.py            # Shared answer-generation layer
+├── notebooks/
+│   ├── 01_copilot_eda.ipynb
+│   ├── 02_copilot_data_prep.ipynb
+│   ├── 03_copilot_rag.ipynb
+│   └── 04_copilot_modeling.ipynb
+├── data/                           # Parquet corpus, cached embeddings, results
+└── images/                         # App screenshots
+```
 
 ## Repository layout
 
 | File | Role |
 |---|---|
 | `ingest.py` | Pull complaints from the CFPB API |
-| `01_copilot_eda.ipynb` | Exploratory analysis and data-quality checks |
-| `02_copilot_data_prep.ipynb` | Cleaning, deduplication, model-ready corpus |
-| `04_copilot_modeling.py` / `.ipynb` | Retrieval + classification evaluation, ablations, significance tests |
-| `retrieval.py` | Shared retrieval layer (corpus, model, search) |
-| `03_copilot_rag.py` / `.ipynb` | Citation-backed question answering, CLI |
-| `gemini_client.py` | Shared answer-generation layer: model selection, retry/fallback logic, citation parsing |
+| `notebooks/01_copilot_eda.ipynb` | Exploratory analysis and data-quality checks |
+| `notebooks/02_copilot_data_prep.ipynb` | Cleaning, deduplication, model-ready corpus |
+| `04_copilot_modeling.py` / `notebooks/04_copilot_modeling.ipynb` | Retrieval + classification evaluation, ablations, significance tests |
+| `src/retrieval.py` | Shared retrieval layer (corpus, model, search) |
+| `03_copilot_rag.py` / `notebooks/03_copilot_rag.ipynb` | Citation-backed question answering, CLI |
+| `src/gemini_client.py` | Shared answer-generation layer: model selection, retry/fallback logic, citation parsing |
 | `app.py` | Streamlit dashboard |
 | `audit_labels.py` | Pooled relevance-label audit across all three retrievers |
 | `diagnose_query.py` | Diagnostic tool for inspecting zero-scoring evaluation queries |
 | `test_pipeline.py` | Three-tier automated test suite (setup/smoke, retrieval regression, generation/faithfulness) |
+| `images/` | Screenshots of the deployed Streamlit application |
 
 ---
 
