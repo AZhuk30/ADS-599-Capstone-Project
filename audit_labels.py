@@ -36,9 +36,13 @@ Usage:
     python audit_labels.py --query 3        # audit one query in detail
 """
 
+import os
 import re
+import sys
 import argparse
 from collections import Counter
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
