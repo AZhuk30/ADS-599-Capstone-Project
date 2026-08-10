@@ -2,7 +2,7 @@
 
 Citation-backed question answering over the [CFPB Consumer Complaint Database](https://www.consumerfinance.gov/data-research/consumer-complaints/).
 
-Ask a plain-English question about consumer complaints and get an answer grounded in — and traceable to — specific complaint narratives.
+Ask a plain-English question about consumer complaints and get an answer grounded in and traceable to specific complaint narratives.
 
 ---
 
