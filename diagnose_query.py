@@ -16,6 +16,11 @@ Usage:
     python diagnose_query.py
 """
 
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+
 import retrieval
 from test_pipeline import EVAL_QUERIES
 
