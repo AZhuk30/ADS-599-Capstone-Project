@@ -2,7 +2,9 @@
 
 Citation-backed question answering over the [CFPB Consumer Complaint Database](https://www.consumerfinance.gov/data-research/consumer-complaints/).
 
-Ask a plain-English question about consumer complaints and get an answer grounded in and traceable to specific complaint narratives.
+Ask a plain-English question about consumer complaints and get an answer grounded in — and traceable to — specific complaint narratives.
+
+**Live demo:** https://complaint-intelligence.streamlit.app
 
 ---
 
@@ -21,22 +23,27 @@ Ask a plain-English question about consumer complaints and get an answer grounde
 
 ```
 CFPB API (official v1 endpoint)
-  ↓  ingest.py
+↓ ingest.py
 data/complaints.parquet
-  ↓  01_copilot_eda.ipynb
+↓ 01_copilot_eda.ipynb
 EDA findings (data quality, category mix, length distribution)
-  ↓  02_copilot_data_prep.ipynb
-data/complaints_model_ready.parquet   (cleaned, deduplicated)
-  ↓  04_copilot_modeling.py
+↓ 02_copilot_data_prep.ipynb
+data/complaints_model_ready.parquet (cleaned, deduplicated)
+↓ 04_copilot_modeling.py
 Retrieval + classification evaluation → data/modeling_*.csv
-  ↓  retrieval.py                      (shared retrieval layer)
-  ↓
-03_copilot_rag.py  (CLI)   ·   app.py  (Streamlit artifact)
+↓ retrieval.py (shared retrieval layer)
+↓
+03_copilot_rag.py (CLI) · app.py (Streamlit artifact)
 ```
 
 `retrieval.py` is the single source of truth for how complaints are embedded and
 searched. Both the CLI and the app import it, so the deployed tool always runs
 the configuration that was evaluated.
+
+Answer generation runs through `gemini_client.py`, a shared layer used by
+`03_copilot_rag.py`, `app.py`, and `test_pipeline.py` alike — so the model name,
+retry policy, and citation-parsing logic can't drift between the CLI, the
+deployed app, and the tests.
 
 ---
 
@@ -63,11 +70,49 @@ architecture is what ships.
 > every system by ~0.054 and left the paired-test conclusions unchanged. Full
 > numbers are in `data/modeling_retrieval.csv`.
 
-
 On a secondary classification diagnostic the ordering reverses: sparse TF-IDF
 features beat dense embeddings (macro-F1 0.754 vs 0.642), a gap that persisted
 across three pooling strategies and reflects representational capacity rather
 than a correctable implementation choice.
+
+**Label leakage, caught and fixed.** An early version of the classification
+pipeline reported a macro-F1 of 0.971 — implausibly high for an eleven-class
+problem on noisy consumer text. The cause was `embedding_input`, a convenience
+field built for the generation prompt that was prefixed with the complaint's
+own product and issue labels (e.g. `"Product: Credit card | Issue: Fees or
+interest."`). Embedding that field meant the model was reading the answer, not
+the complaint. Every model now reads label-free `narrative_clean` text only,
+and `assert_no_label_leakage()` in `04_copilot_modeling.py` raises an error if
+a label-bearing column ever reaches the encoder again. All figures reported
+above reflect the corrected, label-free run.
+
+---
+
+## Known limitations
+
+- **Citation instability.** The generator tends to over-cite (citing all five
+  retrieved complaints on nearly every claim) or, occasionally, under-cite
+  (producing an answer with no citation at all). The app's citation-validation
+  layer catches both failure modes rather than letting them pass silently, but
+  citation behavior should be read as uncalibrated rather than reliably
+  precise. Calibrating this at generation time — rather than only validating
+  it after the fact — is the top item in future work.
+- **Six-month analytical window (Jan–Jun 2026).** Scoped deliberately after
+  EDA revealed a structural break in complaint volume and composition tied to
+  a documented CFPB policy change (see `01_copilot_eda.ipynb`). Blending
+  pre/post-policy data would conflate a regulatory artifact with a genuine
+  behavioral trend.
+- **Off-the-shelf embeddings, no domain adaptation.** Both embedding models
+  used here are pretrained and not fine-tuned on complaint-specific language.
+  The classification gap in favor of sparse features is consistent with the
+  literature's predicted penalty under these conditions.
+- **26-query evaluation set.** Substantially expanded from the 8 queries used
+  early in the project, but still a modest sample; confidence intervals on
+  retrieval metrics are correspondingly wide. Relevance is also proxied by
+  CFPB issue label rather than direct human judgment.
+- **Live app serves a stratified demo subset**, not the full corpus, due to
+  hosting-tier memory/startup constraints. All performance numbers reported
+  above were computed against the full 44,234-complaint corpus.
 
 ---
 
@@ -99,12 +144,17 @@ streamlit run app.py
 To rebuild the corpus from scratch:
 
 ```bash
-python ingest.py --rows 10000
+python ingest.py --rows 10000   # small sample for a quick local test run;
+                                 # results reported above used the full
+                                 # Jan-Jun 2026 extract, ~48,700 rows pre-cleaning
 jupyter notebook 01_copilot_eda.ipynb
 jupyter notebook 02_copilot_data_prep.ipynb
 ```
 
-**Two requirements files.** `requirements.txt` is the minimal app runtime (what Streamlit Cloud installs). `requirements-dev.txt` installs everything — modeling, evaluation, and the notebooks — and is what you want for reproducing results locally.
+**Two requirements files.** `requirements.txt` is the minimal app runtime (what
+Streamlit Cloud installs). `requirements-dev.txt` installs everything —
+modeling, evaluation, and the notebooks — and is what you want for
+reproducing results locally.
 
 **Note on embeddings.** Cached vectors (`data/*.npy`) are gitignored — they
 exceed GitHub's 100 MB file limit. The first run of any script regenerates and
@@ -114,6 +164,39 @@ caches them.
 semantic search and displays source complaints but produces no written answer.
 It deliberately does not fabricate a summary, since an ungrounded summary shown
 beside real citations would be misleading.
+
+**Notebooks vs. scripts.** `03_copilot_rag.ipynb` and `04_copilot_modeling.ipynb`
+mirror `03_copilot_rag.py` and `04_copilot_modeling.py` respectively — same
+logic, notebook form for interactive/exploratory use. The `.py` scripts are
+what the app and test suite actually import and run.
+
+---
+
+## Testing
+
+`test_pipeline.py` runs three tiers of automated checks:
+
+- **Tier 1 — Setup and smoke.** No API key required. Catches broken imports,
+  missing columns, and the label-leakage failure mode directly (checks that no
+  narrative starts with its own product label).
+- **Tier 2 — Retrieval quality regression.** Re-runs the evaluation queries and
+  asserts precision stays above a floor, catching silent breakage (wrong text
+  column, unnormalized vectors, a swapped model) that wouldn't raise an error
+  but would quietly wreck results.
+- **Tier 3 — Generation and faithfulness.** Requires `GEMINI_API_KEY`. Checks
+  every citation resolves to a retrieved complaint, that the system refuses
+  out-of-scope questions rather than hallucinating, and runs an LLM-as-judge
+  faithfulness check in the style of RAGAS (Es et al., 2024).
+
+```bash
+python test_pipeline.py            # tiers 1-2, free, ~2 min
+python test_pipeline.py --full     # adds tier 3, uses API quota, ~3 min
+```
+
+`diagnose_query.py` is a companion tool for interpreting a Tier 2 failure —
+when a query scores zero, it distinguishes a genuine retrieval miss from a
+label-mapping artifact (since relevance is proxied by CFPB issue label, and
+consumers frequently mislabel their own complaints).
 
 ---
 
@@ -150,7 +233,19 @@ Updated daily. No API key required.
 | `ingest.py` | Pull complaints from the CFPB API |
 | `01_copilot_eda.ipynb` | Exploratory analysis and data-quality checks |
 | `02_copilot_data_prep.ipynb` | Cleaning, deduplication, model-ready corpus |
-| `04_copilot_modeling.py` | Retrieval + classification evaluation, ablations, significance tests |
+| `04_copilot_modeling.py` / `.ipynb` | Retrieval + classification evaluation, ablations, significance tests |
 | `retrieval.py` | Shared retrieval layer (corpus, model, search) |
-| `03_copilot_rag.py` | Citation-backed question answering, CLI |
+| `03_copilot_rag.py` / `.ipynb` | Citation-backed question answering, CLI |
+| `gemini_client.py` | Shared answer-generation layer: model selection, retry/fallback logic, citation parsing |
 | `app.py` | Streamlit dashboard |
+| `audit_labels.py` | Pooled relevance-label audit across all three retrievers |
+| `diagnose_query.py` | Diagnostic tool for inspecting zero-scoring evaluation queries |
+| `test_pipeline.py` | Three-tier automated test suite (setup/smoke, retrieval regression, generation/faithfulness) |
+
+---
+
+## Team
+
+Alexander Zhuk · Mark Villanueva · Michael Ha  
+Master of Science in Applied Data Science  
+Shiley Marcos School of Engineering / University of San Diego
